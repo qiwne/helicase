@@ -1,0 +1,459 @@
+//! Input formats and helpers.
+
+use core::marker::PhantomData;
+use deko::read::AnyDecoder;
+use memmap2::Mmap;
+use std::fs::File;
+use std::io::{self, Read, Stdin, stdin};
+use std::path::Path;
+
+const BUFFER_SIZE: usize = 1 << 16;
+
+pub trait InputData<'a>: Iterator<Item = &'a [u8]> {
+    const RANDOM_ACCESS: bool;
+
+    /// Get a reference to the complete slice of data.
+    ///
+    /// This is not available for reader-based implementations.
+    #[inline(always)]
+    fn data(&self) -> &[u8] {
+        assert!(Self::RANDOM_ACCESS);
+        unimplemented!()
+    }
+
+    /// Get a reference to the current chunk of up to 64 bytes.
+    ///
+    /// If the length is smaller than 64, the following bytes are guaranteed to be zeros.
+    fn current_chunk(&self) -> &[u8];
+
+    /// Returns the first byte of the (uncompressed when possible) input.
+    fn first_byte(&self) -> u8;
+
+    /// Returns the type of compression format detected.
+    ///
+    /// This is only available for reader-based implementations.
+    #[inline(always)]
+    fn compression_format(&mut self) -> io::Result<Option<deko::Format>> {
+        Ok(None)
+    }
+
+    /// Returns `true` if compression has been detected.
+    #[inline(always)]
+    fn is_compressed(&mut self) -> io::Result<bool> {
+        Ok(self.compression_format()?.is_some())
+    }
+}
+
+pub trait FromInputData<'a, I: InputData<'a>>: Sized {
+    /// Build the struct from a type implementing [`InputData`].
+    fn from_input(input: I) -> Self;
+}
+
+/// Slice input.
+/// It supports parallel processing, but not transparent decompression.
+pub struct SliceInput<'a> {
+    data: &'a [u8],
+    pos: usize,
+    first_byte: u8,
+    last_chunk: [u8; 64],
+}
+
+impl<'a> SliceInput<'a> {
+    pub fn new(data: &'a [u8]) -> Self {
+        assert!(!data.is_empty());
+        let mut last_chunk = [0; 64];
+        last_chunk[..data.len() % 64].copy_from_slice(&data[(data.len() / 64) * 64..]);
+        Self {
+            data,
+            pos: 0,
+            first_byte: data[0],
+            last_chunk,
+        }
+    }
+}
+
+impl<'a> Iterator for SliceInput<'a> {
+    type Item = &'a [u8];
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Self::Item> {
+        let pos = self.pos;
+        self.pos += 64;
+        if pos + 64 <= self.data.len() {
+            unsafe { Some(std::slice::from_raw_parts(self.data.as_ptr().add(pos), 64)) }
+        } else if pos < self.data.len() {
+            unsafe {
+                Some(std::slice::from_raw_parts(
+                    self.last_chunk.as_ptr(),
+                    self.data.len() % 64,
+                ))
+            }
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a> InputData<'a> for SliceInput<'a> {
+    const RANDOM_ACCESS: bool = true;
+
+    #[inline(always)]
+    fn data(&self) -> &[u8] {
+        self.data
+    }
+
+    #[inline(always)]
+    fn current_chunk(&self) -> &[u8] {
+        if 64 <= self.pos && self.pos <= self.data.len() {
+            unsafe { std::slice::from_raw_parts(self.data.as_ptr().add(self.pos - 64), 64) }
+        } else {
+            unsafe { std::slice::from_raw_parts(self.last_chunk.as_ptr(), self.data.len() % 64) }
+        }
+    }
+
+    #[inline(always)]
+    fn first_byte(&self) -> u8 {
+        self.first_byte
+    }
+}
+
+pub trait FromSlice<'a>: FromInputData<'a, SliceInput<'a>> {
+    /// Build the struct from a slice.
+    /// It supports parallel processing, but not transparent decompression.
+    #[inline(always)]
+    fn from_slice(data: &'a [u8]) -> Self {
+        Self::from_input(SliceInput::new(data))
+    }
+}
+
+impl<'a, F: FromInputData<'a, SliceInput<'a>>> FromSlice<'a> for F {}
+
+/// Memory mapped file.
+/// It supports parallel processing, but not transparent decompression.
+pub struct MmapInput<'a> {
+    slice: SliceInput<'a>,
+    _mmap: Mmap,
+}
+
+impl<'a> MmapInput<'a> {
+    pub fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        // Unsafe: mmap are intrisically unsafe.
+        // Here we add on the top of that a slice of [u8] that will live as long as file is not dropped.
+        // To enforce this, we keep the file in the struct.
+        let file = File::open(path)?;
+        let _mmap = unsafe { Mmap::map(&file)? };
+        let data = unsafe { std::slice::from_raw_parts(_mmap.as_ptr(), _mmap.len()) };
+        Ok(Self {
+            slice: SliceInput::new(data),
+            _mmap,
+        })
+    }
+}
+
+impl<'a> Iterator for MmapInput<'a> {
+    type Item = &'a [u8];
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.slice.next()
+    }
+}
+
+impl<'a> InputData<'a> for MmapInput<'a> {
+    const RANDOM_ACCESS: bool = true;
+
+    #[inline(always)]
+    fn data(&self) -> &[u8] {
+        self.slice.data()
+    }
+
+    #[inline(always)]
+    fn current_chunk(&self) -> &[u8] {
+        self.slice.current_chunk()
+    }
+
+    #[inline(always)]
+    fn first_byte(&self) -> u8 {
+        self.slice.first_byte()
+    }
+}
+
+pub trait FromMmap<'a>: FromInputData<'a, MmapInput<'a>> {
+    /// Build the struct from a memory mapped file.
+    /// It supports parallel processing, but not transparent decompression.
+    #[inline(always)]
+    fn from_file_mmap<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        Ok(Self::from_input(MmapInput::new(path)?))
+    }
+}
+
+impl<'a, F: FromInputData<'a, MmapInput<'a>>> FromMmap<'a> for F {}
+
+/// File entirely loaded in RAM, only recommended for small files.
+/// It supports parallel processing, but not transparent decompression.
+pub struct RamFileInput {
+    slice: SliceInput<'static>,
+    _vec: Vec<u8>,
+}
+
+impl RamFileInput {
+    pub fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        let _vec = std::fs::read(path)?;
+        let data = unsafe { std::slice::from_raw_parts(_vec.as_ptr(), _vec.len()) };
+        Ok(Self {
+            slice: SliceInput::new(data),
+            _vec,
+        })
+    }
+}
+
+impl Iterator for RamFileInput {
+    type Item = &'static [u8];
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.slice.next()
+    }
+}
+
+impl InputData<'static> for RamFileInput {
+    const RANDOM_ACCESS: bool = true;
+
+    #[inline(always)]
+    fn data(&self) -> &[u8] {
+        self.slice.data()
+    }
+
+    #[inline(always)]
+    fn current_chunk(&self) -> &[u8] {
+        self.slice.current_chunk()
+    }
+
+    #[inline(always)]
+    fn first_byte(&self) -> u8 {
+        self.slice.first_byte()
+    }
+}
+
+pub trait FromRamFile: FromInputData<'static, RamFileInput> {
+    /// Build the struct from a file entirely loaded in RAM, this is only recommended for small files.
+    /// It supports parallel processing, but not transparent decompression.
+    #[inline(always)]
+    fn from_file_in_ram<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        Ok(Self::from_input(RamFileInput::new(path)?))
+    }
+}
+
+impl<F: FromInputData<'static, RamFileInput>> FromRamFile for F {}
+
+/// Reader input.
+/// It supports transparent decompression, but not parallel processing.
+pub struct ReaderInput<'a, R: Read + Send + 'a> {
+    data: Vec<u8>,
+    len: usize,
+    pos: usize,
+    first_byte: u8,
+    decoder: AnyDecoder<R>,
+    _phantom: PhantomData<&'a ()>,
+}
+
+impl<'a, R: Read + Send + 'a> ReaderInput<'a, R> {
+    pub fn new(reader: R) -> Self {
+        let mut decoder = AnyDecoder::new(reader);
+        let mut data = vec![0; BUFFER_SIZE];
+        let len = decoder
+            .read(&mut data[..64])
+            .expect("Error while reading data");
+        let first_byte = data[0];
+        Self {
+            data,
+            len,
+            pos: 0,
+            first_byte,
+            decoder,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<'a, R: Read + Send + 'a> Iterator for ReaderInput<'a, R> {
+    type Item = &'a [u8];
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.len {
+            let n = self
+                .decoder
+                .read(&mut self.data)
+                .expect("Error while reading data");
+            if n == 0 {
+                return None;
+            }
+            self.len = n;
+            self.pos = 0;
+        }
+        let pos = self.pos;
+        self.pos += 64;
+        if pos + 64 <= self.len {
+            unsafe { Some(std::slice::from_raw_parts(self.data.as_ptr().add(pos), 64)) }
+        } else {
+            unsafe {
+                Some(std::slice::from_raw_parts(
+                    self.data.as_ptr().add(pos),
+                    self.len % 64,
+                ))
+            }
+        }
+    }
+}
+
+impl<'a, R: Read + Send + 'a> InputData<'a> for ReaderInput<'a, R> {
+    const RANDOM_ACCESS: bool = false;
+
+    #[inline(always)]
+    fn current_chunk(&self) -> &[u8] {
+        if 64 <= self.pos && self.pos <= self.data.len() {
+            unsafe { std::slice::from_raw_parts(self.data.as_ptr().add(self.pos - 64), 64) }
+        } else {
+            unsafe {
+                std::slice::from_raw_parts(
+                    self.data.as_ptr().add((self.len / 64) * 64),
+                    self.len % 64,
+                )
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn first_byte(&self) -> u8 {
+        self.first_byte
+    }
+
+    #[inline(always)]
+    fn compression_format(&mut self) -> io::Result<Option<deko::Format>> {
+        let format = self.decoder.kind()?;
+        if format == deko::Format::Verbatim {
+            Ok(None)
+        } else {
+            Ok(Some(format))
+        }
+    }
+}
+
+pub trait FromReader<'a, R: Read + Send + 'a>: FromInputData<'a, ReaderInput<'a, R>> {
+    /// Build the struct from a reader.
+    /// It supports transparent decompression, but not parallel processing.
+    #[inline(always)]
+    fn from_reader(reader: R) -> Self {
+        Self::from_input(ReaderInput::new(reader))
+    }
+}
+
+impl<'a, R: Read + Send + 'a, F: FromInputData<'a, ReaderInput<'a, R>>> FromReader<'a, R> for F {}
+
+/// File input.
+/// It supports transparent decompression, but not parallel processing.
+pub struct FileInput {
+    reader: ReaderInput<'static, File>,
+}
+
+impl FileInput {
+    pub fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        Ok(Self {
+            reader: ReaderInput::new(File::open(path)?),
+        })
+    }
+}
+
+impl Iterator for FileInput {
+    type Item = &'static [u8];
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.reader.next()
+    }
+}
+
+impl InputData<'static> for FileInput {
+    const RANDOM_ACCESS: bool = false;
+
+    #[inline(always)]
+    fn current_chunk(&self) -> &[u8] {
+        self.reader.current_chunk()
+    }
+
+    #[inline(always)]
+    fn first_byte(&self) -> u8 {
+        self.reader.first_byte()
+    }
+
+    #[inline(always)]
+    fn compression_format(&mut self) -> io::Result<Option<deko::Format>> {
+        self.reader.compression_format()
+    }
+}
+
+pub trait FromFile: FromInputData<'static, FileInput> {
+    /// Build the struct from a file.
+    /// It supports transparent decompression, but not parallel processing.
+    #[inline(always)]
+    fn from_file<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        Ok(Self::from_input(FileInput::new(path)?))
+    }
+}
+
+impl<F: FromInputData<'static, FileInput>> FromFile for F {}
+
+/// Stdin input.
+/// It supports transparent decompression, but not parallel processing.
+pub struct StdinInput {
+    reader: ReaderInput<'static, Stdin>,
+}
+
+impl StdinInput {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self {
+            reader: ReaderInput::new(stdin()),
+        }
+    }
+}
+
+impl Iterator for StdinInput {
+    type Item = &'static [u8];
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.reader.next()
+    }
+}
+
+impl InputData<'static> for StdinInput {
+    const RANDOM_ACCESS: bool = false;
+
+    #[inline(always)]
+    fn current_chunk(&self) -> &[u8] {
+        self.reader.current_chunk()
+    }
+
+    #[inline(always)]
+    fn first_byte(&self) -> u8 {
+        self.reader.first_byte()
+    }
+
+    #[inline(always)]
+    fn compression_format(&mut self) -> io::Result<Option<deko::Format>> {
+        self.reader.compression_format()
+    }
+}
+
+pub trait FromStdin: FromInputData<'static, StdinInput> {
+    /// Build the struct from stdin.
+    /// It supports transparent decompression, but not parallel processing.
+    #[inline(always)]
+    fn from_stdin() -> Self {
+        Self::from_input(StdinInput::new())
+    }
+}
+
+impl<F: FromInputData<'static, StdinInput>> FromStdin for F {}

@@ -1,0 +1,6 @@
+[workspace]
+members = ["bench", "helicase"]
+resolver = "3"
+
+[profile.release]
+lto = "fat"
