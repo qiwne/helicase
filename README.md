@@ -64,7 +64,7 @@ Since each base is encoded using two bits, we have to handle non-ACTG bases diff
 Three options are available for that:
 - `split_non_actg` splits the sequence into contiguous chunks of ACTG bases, stopping the iterator at each chunk.
 - `skip_non_actg` skips the non-ACTG bases and merge the remaining chunks together, stopping once at the end of the record.
-- `keep_non_actg` keeps the non-ACTG bases and encodes the with a lossy representation.
+- `keep_non_actg` keeps the non-ACTG bases and encodes them with a lossy representation.
 
 ### Iterating over chunks of packed DNA
 
@@ -112,7 +112,7 @@ You can run them on any (possibly compressed) FASTA/FASTQ file using:
 RUSTFLAGS="-C target-cpu=native" cargo r -r --bin bench -- <file>
 ```
 
-For instance, you can run it on [this human genome](https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/analysis_set/chm13v2.0.fa.gz).
+For instance, you can run it on [this human genome](https://s3-us-west-2.amazonaws.com/human-pangenomics/T2T/CHM13/assemblies/analysis_set/chm13v2.0.fa.gz) or [these short reads](https://zenodo.org/records/15411280/files/rsviruses17900.r1.fastq.gz).
 
 ## Acknowledgements
 
