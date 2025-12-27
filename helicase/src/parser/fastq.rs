@@ -223,8 +223,20 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> FastqParser<'a, CONFIG, I> {
 
     #[inline(always)]
     fn consume_newline(&mut self) {
-        self.block.newline &= self.block.newline.wrapping_sub(1);
-        self.pos_in_block = (self.pos_in_block + 1).min(63);
+        if self.pos_in_block < 63 {
+            self.block.newline &= self.block.newline.wrapping_sub(1);
+            self.pos_in_block += 1;
+        } else {
+            match self.lexer.next() {
+                Some(b) => self.block = b,
+                None => {
+                    self.finished = true;
+                    self.block.newline &= self.block.newline.wrapping_sub(1);
+                }
+            };
+            self.block_counter += 1;
+            self.pos_in_block = 0;
+        }
         self.line_count += 1;
     }
 }
@@ -251,7 +263,7 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> Iterator for FastqParser<'a, CO
                     while self.block.newline == 0 {
                         if flag_is_set(CONFIG, COMPUTE_HEADER) && !I::RANDOM_ACCESS {
                             let header_chunk =
-                                &self.lexer.input().current_chunk()[(self.pos_in_block + 1)..]; // TODO double check
+                                &self.lexer.input().current_chunk()[self.pos_in_block..]; // TODO double check
                             self.cur_header.extend_from_slice(header_chunk);
                         }
                         self.block = match self.lexer.next() {
