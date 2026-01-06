@@ -138,7 +138,7 @@ impl ParserOptions {
     /// This is enabled by default with [`dna_string`](#method.dna_string).
     #[inline(always)]
     pub const fn keep_non_actg(self) -> Self {
-        Self(self.0 & !(SPLIT_NON_ACTG | MERGE_DNA_CHUNKS))
+        Self(self.0 & !(SPLIT_NON_ACTG | RETURN_DNA_CHUNK | MERGE_DNA_CHUNKS))
     }
 
     /// Split the sequence at non-ACTG bases, returning multiple [`DnaChunk`](crate::parser::Event).
