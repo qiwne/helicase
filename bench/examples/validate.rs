@@ -5,14 +5,11 @@ use needletail::parse_fastx_file;
 const CONFIG: Config = ParserOptions::default().compute_quality().config();
 
 fn check_mismatch(left: &[u8], right: &[u8]) -> Option<usize> {
+    if left == right {
+        return None;
+    }
     let len = left.len().min(right.len());
-    (0..len).find(|&i| left[i] != right[i]).or({
-        if left.len() != right.len() {
-            Some(len)
-        } else {
-            None
-        }
-    })
+    (0..len).find(|&i| left[i] != right[i]).or(Some(len))
 }
 
 fn get_scope(slice: &[u8], pos: usize) -> &str {
