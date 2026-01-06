@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{self, Read, Stdin, stdin};
 use std::path::Path;
 
-const BUFFER_SIZE: usize = 1 << 16;
+const DEFAULT_BUFFER_SIZE: usize = 1 << 16;
 
 pub trait InputData<'a>: Iterator<Item = &'a [u8]> {
     const RANDOM_ACCESS: bool;
@@ -25,6 +25,29 @@ pub trait InputData<'a>: Iterator<Item = &'a [u8]> {
     ///
     /// If the length is smaller than 64, the following bytes are guaranteed to be zeros.
     fn current_chunk(&self) -> &[u8];
+
+    /// Get a reference to the current buffer.
+    ///
+    /// This is only relevant for reader-based implementations.
+    fn current_buffer(&self) -> &[u8];
+
+    /// Returns the offset of the start of the buffer.
+    ///
+    /// This is only relevant for reader-based implementations.
+    fn buffer_offset(&self) -> usize {
+        0
+    }
+
+    /// Returns `true` if we are at the end of the current buffer.
+    ///
+    /// This is only relevant for reader-based implementations.
+    fn is_end_of_buffer(&self) -> bool;
+
+    /// Grow buffer and load `additional` new bytes.
+    ///
+    /// This is only relevant for reader-based implementations.
+    #[inline(always)]
+    fn grow_buffer(&mut self, _additional: usize) {}
 
     /// Returns the first byte of the (uncompressed when possible) input.
     fn first_byte(&self) -> u8;
@@ -112,6 +135,16 @@ impl<'a> InputData<'a> for SliceInput<'a> {
     }
 
     #[inline(always)]
+    fn current_buffer(&self) -> &[u8] {
+        self.data
+    }
+
+    #[inline(always)]
+    fn is_end_of_buffer(&self) -> bool {
+        self.pos >= self.data.len()
+    }
+
+    #[inline(always)]
     fn first_byte(&self) -> u8 {
         self.first_byte
     }
@@ -173,6 +206,16 @@ impl<'a> InputData<'a> for MmapInput<'a> {
     }
 
     #[inline(always)]
+    fn current_buffer(&self) -> &[u8] {
+        self.slice.current_buffer()
+    }
+
+    #[inline(always)]
+    fn is_end_of_buffer(&self) -> bool {
+        self.slice.is_end_of_buffer()
+    }
+
+    #[inline(always)]
     fn first_byte(&self) -> u8 {
         self.slice.first_byte()
     }
@@ -230,6 +273,16 @@ impl InputData<'static> for RamFileInput {
     }
 
     #[inline(always)]
+    fn current_buffer(&self) -> &[u8] {
+        self.slice.current_buffer()
+    }
+
+    #[inline(always)]
+    fn is_end_of_buffer(&self) -> bool {
+        self.slice.is_end_of_buffer()
+    }
+
+    #[inline(always)]
     fn first_byte(&self) -> u8 {
         self.slice.first_byte()
     }
@@ -252,6 +305,7 @@ pub struct ReaderInput<'a, R: Read + Send + 'a> {
     data: Vec<u8>,
     len: usize,
     pos: usize,
+    offset: usize,
     first_byte: u8,
     decoder: AnyDecoder<R>,
     _phantom: PhantomData<&'a ()>,
@@ -260,7 +314,7 @@ pub struct ReaderInput<'a, R: Read + Send + 'a> {
 impl<'a, R: Read + Send + 'a> ReaderInput<'a, R> {
     pub fn new(reader: R) -> Self {
         let mut decoder = AnyDecoder::new(reader);
-        let mut data = vec![0; BUFFER_SIZE];
+        let mut data = vec![0; DEFAULT_BUFFER_SIZE];
         let len = decoder
             .read(&mut data[..64])
             .expect("Error while reading data");
@@ -269,6 +323,7 @@ impl<'a, R: Read + Send + 'a> ReaderInput<'a, R> {
             data,
             len,
             pos: 0,
+            offset: 0,
             first_byte,
             decoder,
             _phantom: PhantomData,
@@ -289,6 +344,7 @@ impl<'a, R: Read + Send + 'a> Iterator for ReaderInput<'a, R> {
             if n == 0 {
                 return None;
             }
+            self.offset += self.len;
             self.len = n;
             self.pos = 0;
         }
@@ -322,6 +378,31 @@ impl<'a, R: Read + Send + 'a> InputData<'a> for ReaderInput<'a, R> {
                 )
             }
         }
+    }
+
+    #[inline(always)]
+    fn current_buffer(&self) -> &[u8] {
+        &self.data
+    }
+
+    #[inline(always)]
+    fn buffer_offset(&self) -> usize {
+        self.offset
+    }
+
+    #[inline(always)]
+    fn is_end_of_buffer(&self) -> bool {
+        self.pos >= self.data.len()
+    }
+
+    #[inline(always)]
+    fn grow_buffer(&mut self, additional: usize) {
+        self.data.resize(self.len + additional, 0);
+        let n = self
+            .decoder
+            .read(&mut self.data[self.len..])
+            .expect("Error while reading data");
+        self.len += n;
     }
 
     #[inline(always)]
@@ -383,6 +464,26 @@ impl InputData<'static> for FileInput {
     }
 
     #[inline(always)]
+    fn current_buffer(&self) -> &[u8] {
+        self.reader.current_buffer()
+    }
+
+    #[inline(always)]
+    fn buffer_offset(&self) -> usize {
+        self.reader.buffer_offset()
+    }
+
+    #[inline(always)]
+    fn is_end_of_buffer(&self) -> bool {
+        self.reader.is_end_of_buffer()
+    }
+
+    #[inline(always)]
+    fn grow_buffer(&mut self, additional: usize) {
+        self.reader.grow_buffer(additional)
+    }
+
+    #[inline(always)]
     fn first_byte(&self) -> u8 {
         self.reader.first_byte()
     }
@@ -434,6 +535,26 @@ impl InputData<'static> for StdinInput {
     #[inline(always)]
     fn current_chunk(&self) -> &[u8] {
         self.reader.current_chunk()
+    }
+
+    #[inline(always)]
+    fn current_buffer(&self) -> &[u8] {
+        self.reader.current_buffer()
+    }
+
+    #[inline(always)]
+    fn buffer_offset(&self) -> usize {
+        self.reader.buffer_offset()
+    }
+
+    #[inline(always)]
+    fn is_end_of_buffer(&self) -> bool {
+        self.reader.is_end_of_buffer()
+    }
+
+    #[inline(always)]
+    fn grow_buffer(&mut self, additional: usize) {
+        self.reader.grow_buffer(additional)
     }
 
     #[inline(always)]
