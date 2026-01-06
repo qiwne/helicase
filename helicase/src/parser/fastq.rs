@@ -102,10 +102,8 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> Parser for FastqParser<'a, CONF
         assert!(flag_is_set(CONFIG, COMPUTE_HEADER));
         if I::RANDOM_ACCESS {
             &self.lexer.input.data()[self.header_range.clone()]
-        } else if self.cur_header.is_empty() {
-            &self.cur_header
         } else {
-            &self.cur_header[1..]
+            &self.cur_header
         }
     }
 
@@ -114,7 +112,6 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> Parser for FastqParser<'a, CONF
         assert!(flag_is_set(CONFIG, COMPUTE_HEADER));
         if I::RANDOM_ACCESS {
             self.lexer.input.data()[self.header_range.clone()].to_vec()
-            // TODO: check consistent results
         } else {
             let mut res = Vec::with_capacity(self.cur_header.capacity());
             swap(&mut res, &mut self.cur_header);
@@ -128,12 +125,7 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> Parser for FastqParser<'a, CONF
         if I::RANDOM_ACCESS {
             Some(&self.lexer.input.data()[self.quality_range.clone()])
         } else {
-            let n = self.cur_quality.len();
-            if n < 2 {
-                Some(&self.cur_quality)
-            } else {
-                Some(&self.cur_quality[1..(n - 1)]) // TODO double check
-            }
+            Some(&self.cur_quality)
         }
     }
 
@@ -142,7 +134,6 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> Parser for FastqParser<'a, CONF
         assert!(flag_is_set(CONFIG, COMPUTE_QUALITY));
         if I::RANDOM_ACCESS {
             Some(self.lexer.input.data()[self.quality_range.clone()].to_vec())
-            // TODO: check consistent results
         } else {
             let mut res = Vec::with_capacity(self.cur_quality.capacity());
             swap(&mut res, &mut self.cur_quality);
@@ -262,8 +253,7 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> Iterator for FastqParser<'a, CO
                     let mut first_pos = self.pos_in_block + 1;
                     while self.block.newline == 0 {
                         if flag_is_set(CONFIG, COMPUTE_HEADER) && !I::RANDOM_ACCESS {
-                            let header_chunk =
-                                &self.lexer.input().current_chunk()[self.pos_in_block..]; // TODO double check
+                            let header_chunk = &self.lexer.input().current_chunk()[first_pos..];
                             self.cur_header.extend_from_slice(header_chunk);
                         }
                         self.block = match self.lexer.next() {
