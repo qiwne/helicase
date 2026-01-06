@@ -368,7 +368,7 @@ impl<'a, R: Read + Send + 'a> InputData<'a> for ReaderInput<'a, R> {
 
     #[inline(always)]
     fn current_chunk(&self) -> &[u8] {
-        if 64 <= self.pos && self.pos <= self.data.len() {
+        if 64 <= self.pos && self.pos <= self.len {
             unsafe { std::slice::from_raw_parts(self.data.as_ptr().add(self.pos - 64), 64) }
         } else {
             unsafe {
