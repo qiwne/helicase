@@ -7,22 +7,10 @@ use crate::lexer::*;
 use core::mem::swap;
 use core::ops::Range;
 
-// #[derive(Debug)]
-// pub enum FastaEvent {
-//     StartHeader(usize),
-//     EndHeader(usize),
-//     StartDNA(usize),
-//     EndDNA(usize),
-//     EndRecord(usize),
-// }
-
-// #[derive(PartialEq, Debug)]
 enum State {
     Start,
     Restart,
-    StartHeader,
-    InHeader,
-    EndHeader,
+    Header,
     StartDNA,
     InDNABlock,
     EndDNA,
@@ -37,7 +25,8 @@ pub struct FastaParser<'a, const CONFIG: Config, I: InputData<'a>> {
     block_counter: usize,
     pos_in_block: usize,
     header_range: Range<usize>,
-    // dna_range: Range<usize>,
+    dna_range: Range<usize>,
+    contiguous_dna: bool,
     cur_header: Vec<u8>,
     cur_dna_string: Vec<u8>,
     cur_dna_columnar: ColumnarDNA,
@@ -63,7 +52,8 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> FastaParser<'a, CONFIG, I> {
             block_counter: 0,
             pos_in_block: 0,
             header_range: 0..0,
-            // dna_range: 0..0,
+            dna_range: 0..0,
+            contiguous_dna: true,
             cur_header: Vec::new(),
             cur_dna_string: Vec::new(),
             cur_dna_columnar: ColumnarDNA::new(),
@@ -141,18 +131,18 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> Parser for FastaParser<'a, CONF
     #[inline(always)]
     fn get_dna_string(&self) -> &[u8] {
         assert!(flag_is_set(CONFIG, COMPUTE_DNA_STRING));
-        // if I::RANDOM_ACCESS && flag_is_not_set(CONFIG, SPLIT_NON_ACTG) {
-        //     return &self.lexer.data.data()[self.dna_range.clone()];
-        // }
+        if I::RANDOM_ACCESS && self.contiguous_dna {
+            return &self.lexer.input.data()[self.dna_range.clone()];
+        }
         &self.cur_dna_string
     }
 
     #[inline(always)]
     fn get_dna_string_owned(&mut self) -> Vec<u8> {
         assert!(flag_is_set(CONFIG, COMPUTE_DNA_STRING));
-        // if I::RANDOM_ACCESS && flag_is_not_set(CONFIG, SPLIT_NON_ACTG) {
-        //     return self.lexer.data.data()[self.dna_range.clone()].to_vec();
-        // }
+        if I::RANDOM_ACCESS && self.contiguous_dna {
+            return self.lexer.input.data()[self.dna_range.clone()].to_vec();
+        }
         let mut res = Vec::with_capacity(self.cur_dna_string.capacity());
         swap(&mut res, &mut self.cur_dna_string);
         res
@@ -272,8 +262,7 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> FastaParser<'a, CONFIG, I> {
         let mut position = !self.block.is_dna & mask;
         let mut first_pos = self.pos_in_block;
         while position == 0 {
-            if flag_is_set(CONFIG, COMPUTE_DNA_STRING)
-            // && (flag_is_set(CONFIG, SPLIT_NON_ACTG) || !I::RANDOM_ACCESS) // problem if it is multiline
+            if flag_is_set(CONFIG, COMPUTE_DNA_STRING) && !(I::RANDOM_ACCESS && self.contiguous_dna)
             {
                 let dna_chunk = &self.lexer.input().current_chunk()[self.pos_in_block..];
                 self.cur_dna_string.extend_from_slice(dna_chunk);
@@ -297,6 +286,7 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> FastaParser<'a, CONFIG, I> {
             self.block = match self.lexer.next() {
                 Some(b) => b,
                 None => {
+                    self.pos_in_block = self.lexer.input().current_chunk().len();
                     return true;
                 }
             };
@@ -306,9 +296,7 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> FastaParser<'a, CONFIG, I> {
             position = !self.block.is_dna;
         }
         self.pos_in_block = position.trailing_zeros() as usize;
-        if flag_is_set(CONFIG, COMPUTE_DNA_STRING)
-        // && (flag_is_set(CONFIG, SPLIT_NON_ACTG) || !I::RANDOM_ACCESS) // problem if it is multiline
-        {
+        if flag_is_set(CONFIG, COMPUTE_DNA_STRING) && !(I::RANDOM_ACCESS && self.contiguous_dna) {
             let dna_chunk = &self.lexer.input().current_chunk()[first_pos..self.pos_in_block];
             self.cur_dna_string.extend_from_slice(dna_chunk);
         }
@@ -339,6 +327,7 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> FastaParser<'a, CONFIG, I> {
             self.block = match self.lexer.next() {
                 Some(b) => b,
                 None => {
+                    self.pos_in_block = self.lexer.input().current_chunk().len();
                     return true;
                 }
             };
@@ -365,91 +354,81 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> Iterator for FastaParser<'a, CO
                     }
                     self.finished = self.skip_to_start_header();
                     if self.block.header != 0 {
-                        self.state = State::StartHeader;
+                        self.state = State::Header;
                     }
                 }
                 State::Restart => {
                     if self.finished {
                         self.state = State::Start;
                         if flag_is_set(CONFIG, RETURN_RECORD) {
-                            // return Some(FastaEvent::EndRecord(self.global_pos()));
                             return Some(Event::Record(self.global_pos()));
                         }
                         continue;
                     }
                     self.finished = self.skip_to_header_or_dna();
                     if (1u64 << self.pos_in_block & self.block.header) != 0 {
-                        self.state = State::StartHeader;
+                        self.state = State::Header;
                         if flag_is_set(CONFIG, RETURN_RECORD) {
-                            // return Some(FastaEvent::EndRecord(self.global_pos()));
                             return Some(Event::Record(self.global_pos()));
                         }
                     } else if (1u64 << self.pos_in_block & self.block.is_dna) != 0 {
                         self.state = State::StartDNA;
                     }
                 }
-                State::StartHeader => {
-                    self.state = State::InHeader;
+                State::Header => {
                     if flag_is_not_set(CONFIG, MERGE_RECORDS) {
                         self.clear_record();
                     }
                     if flag_is_set(CONFIG, COMPUTE_HEADER) && I::RANDOM_ACCESS {
                         self.header_range.start = self.global_pos() + 1;
                     }
-                    // if flag_is_set(CONFIG, RETURN_START_HEADER) {
-                    //     return Some(FastaEvent::StartHeader(self.global_pos()));
-                    // }
-                }
-                State::InHeader => {
                     self.finished = self.skip_to_end_header();
-                    self.state = State::EndHeader;
-                }
-                State::EndHeader => {
-                    self.state = State::Restart;
                     if flag_is_set(CONFIG, COMPUTE_HEADER) && I::RANDOM_ACCESS {
                         self.header_range.end = self.global_pos() - 1;
                     }
-                    // if flag_is_set(CONFIG, RETURN_END_HEADER) {
-                    //     return Some(FastaEvent::EndHeader(self.global_pos() - 1));
-                    // }
+                    self.contiguous_dna = true;
+                    self.state = State::Restart;
                 }
                 State::StartDNA => {
                     self.state = State::InDNABlock;
                     if flag_is_not_set(CONFIG, MERGE_DNA_CHUNKS) {
                         self.clear_chunk();
                     }
-                    // if flag_is_set(CONFIG, COMPUTE_DNA_STRING)
-                    //     && flag_is_not_set(CONFIG, SPLIT_NON_ACTG)
-                    //     && I::RANDOM_ACCESS
-                    // {
-                    //     self.dna_range.start = self.global_pos();
-                    // }
-                    // if flag_is_set(CONFIG, RETURN_START_DNA_CHUNK) {
-                    //     return Some(FastaEvent::StartDNA(self.global_pos()));
-                    // }
+                    if flag_is_set(CONFIG, COMPUTE_DNA_STRING) && I::RANDOM_ACCESS {
+                        self.dna_range.start = self.global_pos();
+                    }
                 }
                 State::InDNABlock => {
-                    if self.skip_to_non_dna() || self.skip_to_dna_or_split_or_header() {
+                    if self.skip_to_non_dna() {
+                        self.finished = true;
+                        self.dna_range.end = self.global_pos();
+                        self.state = State::EndDNA;
+                        continue;
+                    }
+                    self.dna_range.end = self.global_pos();
+                    if self.skip_to_dna_or_split_or_header() {
                         self.finished = true;
                         self.state = State::EndDNA;
                         continue;
                     }
-                    if ((1 << self.pos_in_block) & (self.block.split | self.block.header)) != 0 {
-                        self.state = State::EndDNA;
-                    } else if ((1 << self.pos_in_block) & self.block.is_dna) != 0 {
+                    if flag_is_set(CONFIG, COMPUTE_DNA_STRING)
+                        && I::RANDOM_ACCESS
+                        && self.contiguous_dna
+                        && ((1 << self.pos_in_block) & self.block.header) == 0
+                    {
+                        let dna_chunk = &self.lexer.input.data()[self.dna_range.clone()];
+                        self.cur_dna_string.extend_from_slice(dna_chunk);
+                        self.contiguous_dna = false;
+                    }
+                    if ((1 << self.pos_in_block) & self.block.is_dna) != 0 {
                         self.state = State::InDNABlock;
+                    } else {
+                        self.state = State::EndDNA;
                     }
                 }
                 State::EndDNA => {
                     self.state = State::Restart;
-                    // if flag_is_set(CONFIG, COMPUTE_DNA_STRING)
-                    //     && flag_is_not_set(CONFIG, SPLIT_NON_ACTG)
-                    //     && I::RANDOM_ACCESS
-                    // {
-                    //     self.dna_range.end = self.global_pos();
-                    // }
                     if flag_is_set(CONFIG, RETURN_DNA_CHUNK) {
-                        // return Some(FastaEvent::EndDNA(self.global_pos() - 1));
                         return Some(Event::DnaChunk(self.global_pos() - 1));
                     }
                 }
@@ -498,11 +477,6 @@ mod tests {
         .dna_packed()
         .skip_non_actg()
         .config();
-    // const CONFIG_START_END: Config = RETURN_START_HEADER
-    //     | RETURN_END_HEADER
-    //     | RETURN_START_DNA_CHUNK
-    //     | RETURN_DNA_CHUNK
-    //     | SPLIT_NON_ACTG;
 
     static FASTA: &[u8] =
         b">head\nTTTCTtaAAAA\nAGAAAA\nACAAN\n\n>hhh\nCTCTTANNAAA\nCAAAnAGCTTT\n>A B C \nCCAC"
@@ -513,12 +487,9 @@ mod tests {
         let mut f = FastaParser::<CONFIG_HEADER, _>::from_slice(FASTA);
         let mut res = Vec::new();
         while let Some(_) = f.next() {
-            res.push(f.get_header().to_vec());
+            res.push(String::from_utf8(f.get_header_owned()).unwrap());
         }
-        assert_eq!(
-            res,
-            vec![b"head".to_vec(), b"hhh".to_vec(), b"A B C ".to_vec(),]
-        );
+        assert_eq!(res, vec!["head", "hhh", "A B C ",]);
     }
 
     #[test]
@@ -526,45 +497,38 @@ mod tests {
         let mut f = FastaParser::<CONFIG_STRING, _>::from_slice(FASTA);
         let mut res = Vec::new();
         while let Some(_) = f.next() {
-            res.push(f.get_dna_string().to_vec());
+            res.push(String::from_utf8(f.get_dna_string_owned()).unwrap());
         }
         assert_eq!(
             res,
-            vec![
-                b"TTTCTtaAAAAAGAAAAACAAN".to_vec(),
-                b"CTCTTANNAAACAAAnAGCTTT".to_vec(),
-                b"CCAC".to_vec(),
-            ]
+            vec!["TTTCTtaAAAAAGAAAAACAAN", "CTCTTANNAAACAAAnAGCTTT", "CCAC",]
         );
+        println!();
 
         let mut f = FastaParser::<CONFIG_STRING_ACTG, _>::from_slice(FASTA);
         let mut res = Vec::new();
         while let Some(_) = f.next() {
-            res.push(f.get_dna_string().to_vec());
+            res.push(String::from_utf8(f.get_dna_string_owned()).unwrap());
         }
         assert_eq!(
             res,
             vec![
-                b"TTTCTtaAAAAAGAAAAACAA".to_vec(),
-                b"CTCTTA".to_vec(),
-                b"AAACAAA".to_vec(),
-                b"AGCTTT".to_vec(),
-                b"CCAC".to_vec(),
+                "TTTCTtaAAAAAGAAAAACAA",
+                "CTCTTA",
+                "AAACAAA",
+                "AGCTTT",
+                "CCAC",
             ]
         );
 
         let mut f = FastaParser::<CONFIG_STRING_ACTG_MERGE, _>::from_slice(FASTA);
         let mut res = Vec::new();
         while let Some(_) = f.next() {
-            res.push(f.get_dna_string().to_vec());
+            res.push(String::from_utf8(f.get_dna_string_owned()).unwrap());
         }
         assert_eq!(
             res,
-            vec![
-                b"TTTCTtaAAAAAGAAAAACAA".to_vec(),
-                b"CTCTTAAAACAAAAGCTTT".to_vec(),
-                b"CCAC".to_vec(),
-            ]
+            vec!["TTTCTtaAAAAAGAAAAACAA", "CTCTTAAAACAAAAGCTTT", "CCAC",]
         );
     }
 
@@ -633,54 +597,4 @@ mod tests {
             ]
         );
     }
-
-    // #[test]
-    // fn test_event_fasta() {
-    //     let f = FastaParser::<CONFIG_START_END, _>::from_slice(FASTA);
-    //     let res: Vec<_> = f.map(|e| format!("{:?}", e)).collect();
-    //     assert_eq!(
-    //         res,
-    //         vec![
-    //             "StartHeader(0)",
-    //             "EndHeader(5)",
-    //             "StartDNA(6)",
-    //             "EndDNA(28)",
-    //             "StartHeader(32)",
-    //             "EndHeader(36)",
-    //             "StartDNA(37)",
-    //             "EndDNA(42)",
-    //             "StartDNA(45)",
-    //             "EndDNA(52)",
-    //             "StartDNA(54)",
-    //             "EndDNA(60)",
-    //             "StartHeader(61)",
-    //             "EndHeader(68)",
-    //             "StartDNA(69)",
-    //             "EndDNA(72)",
-    //         ]
-    //     );
-
-    //     let f = FastaParser::<RETURN_START_HEADER, _>::from_slice(FASTA);
-    //     let res: Vec<_> = f.map(|e| format!("{:?}", e)).collect();
-    //     assert_eq!(
-    //         res,
-    //         vec!["StartHeader(0)", "StartHeader(32)", "StartHeader(61)"]
-    //     );
-
-    //     let mut f = FastaParser::<0, _>::from_slice(FASTA);
-    //     assert!(f.next().is_none());
-
-    //     let f = FastaParser::<{ RETURN_DNA_CHUNK | SPLIT_NON_ACTG }, _>::from_slice(FASTA);
-    //     let res: Vec<_> = f.map(|e| format!("{:?}", e)).collect();
-    //     assert_eq!(
-    //         res,
-    //         vec![
-    //             "EndDNA(28)",
-    //             "EndDNA(42)",
-    //             "EndDNA(52)",
-    //             "EndDNA(60)",
-    //             "EndDNA(72)"
-    //         ]
-    //     );
-    // }
 }
