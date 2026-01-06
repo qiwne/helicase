@@ -9,6 +9,7 @@ mod x86 {
             Self(carry as u8)
         }
 
+        #[allow(unused_unsafe)]
         #[inline(always)]
         pub fn add(&mut self, lhs: u64, rhs: u64) -> u64 {
             use core::arch::x86_64::_addcarry_u64;
