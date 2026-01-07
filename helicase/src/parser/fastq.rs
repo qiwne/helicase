@@ -29,7 +29,7 @@ pub struct FastqParser<'a, const CONFIG: Config, I: InputData<'a>> {
 impl<'a, const CONFIG: Config, I: InputData<'a>> FastqParser<'a, CONFIG, I> {
     fn from_lexer(mut lexer: FastqLexer<'a, CONFIG, I>) -> Self {
         let mut finished: bool = false;
-        let first = match lexer.next() {
+        let block = match lexer.next() {
             Some(c) => c,
             None => {
                 finished = true;
@@ -40,7 +40,7 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> FastqParser<'a, CONFIG, I> {
             lexer,
             finished,
             line_count: 0,
-            block: first,
+            block,
             block_counter: 0,
             pos_in_block: 0,
             header_range: 0..0,
@@ -205,29 +205,25 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> FastqParser<'a, CONFIG, I> {
     }
 
     #[inline(always)]
-    fn global_pos_capped(&self) -> usize {
-        64 * self.block_counter
-            + self
-                .pos_in_block
-                .min(self.lexer.input().current_chunk().len()) // TODO double check
+    fn increment_pos(&mut self) {
+        if self.pos_in_block + 1 < self.lexer.input.current_chunk_len() {
+            self.pos_in_block += 1;
+        } else {
+            match self.lexer.next() {
+                Some(b) => {
+                    self.block = b;
+                    self.block_counter += 1;
+                    self.pos_in_block = 0;
+                }
+                None => self.finished = true,
+            };
+        }
     }
 
     #[inline(always)]
     fn consume_newline(&mut self) {
-        if self.pos_in_block < 63 {
-            self.block.newline &= self.block.newline.wrapping_sub(1);
-            self.pos_in_block += 1;
-        } else {
-            match self.lexer.next() {
-                Some(b) => self.block = b,
-                None => {
-                    self.finished = true;
-                    self.block.newline &= self.block.newline.wrapping_sub(1);
-                }
-            };
-            self.block_counter += 1;
-            self.pos_in_block = 0;
-        }
+        self.block.newline &= self.block.newline.wrapping_sub(1);
+        self.increment_pos();
         self.line_count += 1;
     }
 }
@@ -241,6 +237,7 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> Iterator for FastqParser<'a, CO
             match self.line_count % 4 {
                 0 => {
                     // HEADER
+                    self.increment_pos();
                     if self.finished {
                         return None;
                     }
@@ -248,12 +245,12 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> Iterator for FastqParser<'a, CO
                         self.clear_record();
                     }
                     if flag_is_set(CONFIG, COMPUTE_HEADER) && I::RANDOM_ACCESS {
-                        self.header_range.start = self.global_pos() + 1;
+                        self.header_range.start = self.global_pos();
                     }
-                    let mut first_pos = self.pos_in_block + 1;
+                    let mut first_pos = self.pos_in_block;
                     while self.block.newline == 0 {
                         if flag_is_set(CONFIG, COMPUTE_HEADER) && !I::RANDOM_ACCESS {
-                            let header_chunk = &self.lexer.input().current_chunk()[first_pos..];
+                            let header_chunk = &self.lexer.input.current_chunk()[first_pos..];
                             self.cur_header.extend_from_slice(header_chunk);
                         }
                         self.block = match self.lexer.next() {
@@ -273,7 +270,7 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> Iterator for FastqParser<'a, CO
                     }
                     if flag_is_set(CONFIG, COMPUTE_HEADER) && !I::RANDOM_ACCESS {
                         let header_chunk =
-                            &self.lexer.input().current_chunk()[first_pos..self.pos_in_block];
+                            &self.lexer.input.current_chunk()[first_pos..self.pos_in_block];
                         self.cur_header.extend_from_slice(header_chunk);
                     }
                     self.consume_newline();
@@ -320,8 +317,7 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> Iterator for FastqParser<'a, CO
                         if flag_is_set(CONFIG, COMPUTE_DNA_STRING)
                             && (flag_is_set(CONFIG, SPLIT_NON_ACTG) || !I::RANDOM_ACCESS)
                         {
-                            let dna_chunk =
-                                &self.lexer.input().current_chunk()[self.pos_in_block..];
+                            let dna_chunk = &self.lexer.input.current_chunk()[self.pos_in_block..];
                             self.cur_dna_string.extend_from_slice(dna_chunk);
                         }
                         if flag_is_set(CONFIG, COMPUTE_DNA_COLUMNAR) {
@@ -357,7 +353,7 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> Iterator for FastqParser<'a, CO
                         && (flag_is_set(CONFIG, SPLIT_NON_ACTG) || !I::RANDOM_ACCESS)
                     {
                         let dna_chunk =
-                            &self.lexer.input().current_chunk()[first_pos..self.pos_in_block];
+                            &self.lexer.input.current_chunk()[first_pos..self.pos_in_block];
                         self.cur_dna_string.extend_from_slice(dna_chunk);
                     }
                     if flag_is_set(CONFIG, COMPUTE_DNA_COLUMNAR) {
@@ -421,7 +417,7 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> Iterator for FastqParser<'a, CO
                     while self.block.newline == 0 {
                         if flag_is_set(CONFIG, COMPUTE_QUALITY) && !I::RANDOM_ACCESS {
                             let quality_chunk =
-                                &self.lexer.input().current_chunk()[self.pos_in_block..];
+                                &self.lexer.input.current_chunk()[self.pos_in_block..];
                             self.cur_quality.extend_from_slice(quality_chunk);
                         }
                         self.block = match self.lexer.next() {
@@ -436,15 +432,19 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> Iterator for FastqParser<'a, CO
                         first_pos = 0;
                     }
                     self.pos_in_block = self.block.newline.trailing_zeros() as usize;
+                    if flag_is_set(CONFIG, COMPUTE_QUALITY) {
+                        self.pos_in_block =
+                            self.pos_in_block.min(self.lexer.input.current_chunk_len());
+                    }
                     if flag_is_set(CONFIG, COMPUTE_QUALITY) && I::RANDOM_ACCESS {
-                        self.quality_range.end = self.global_pos_capped();
+                        self.quality_range.end = self.global_pos();
                     }
                     if flag_is_set(CONFIG, COMPUTE_QUALITY)
                         && !I::RANDOM_ACCESS
                         && self.block.newline != 0
                     {
                         let quality_chunk =
-                            &self.lexer.input().current_chunk()[first_pos..self.pos_in_block];
+                            &self.lexer.input.current_chunk()[first_pos..self.pos_in_block];
                         self.cur_quality.extend_from_slice(quality_chunk);
                     }
                     self.consume_newline();
