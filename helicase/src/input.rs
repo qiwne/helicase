@@ -369,8 +369,10 @@ impl<'a, R: Read + Send + 'a> Iterator for ReaderInput<'a, R> {
                 return None;
             }
             self.offset += self.len;
-            self.len = n;
             self.pos = 0;
+            self.len = n;
+            let padded_len = self.len.next_multiple_of(64);
+            self.data[self.len..padded_len].fill(0);
         }
         let pos = self.pos;
         self.pos += 64;
@@ -436,6 +438,8 @@ impl<'a, R: Read + Send + 'a> InputData<'a> for ReaderInput<'a, R> {
             .read(&mut self.data[self.len..])
             .expect("Error while reading data");
         self.len += n;
+        let padded_len = self.len.next_multiple_of(64);
+        self.data[self.len..padded_len].fill(0);
     }
 
     #[inline(always)]

@@ -286,7 +286,7 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> FastaParser<'a, CONFIG, I> {
             self.block = match self.lexer.next() {
                 Some(b) => b,
                 None => {
-                    self.pos_in_block = self.lexer.input().current_chunk().len();
+                    self.pos_in_block = self.lexer.input().current_chunk_len();
                     return true;
                 }
             };
@@ -327,7 +327,7 @@ impl<'a, const CONFIG: Config, I: InputData<'a>> FastaParser<'a, CONFIG, I> {
             self.block = match self.lexer.next() {
                 Some(b) => b,
                 None => {
-                    self.pos_in_block = self.lexer.input().current_chunk().len();
+                    self.pos_in_block = self.lexer.input().current_chunk_len();
                     return true;
                 }
             };
