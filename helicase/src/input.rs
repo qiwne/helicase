@@ -26,19 +26,24 @@ pub trait InputData<'a>: Iterator<Item = &'a [u8]> {
     /// If the length is smaller than 64, the following bytes are guaranteed to be zeros.
     fn current_chunk(&self) -> &[u8];
 
-    /// Get a reference to the current buffer.
+    /// Returns the length of the current chunk.
+    ///
+    /// This is faster than calling `current_chunk().len()`.
+    fn current_chunk_len(&self) -> usize;
+
+    /// Get a reference to the internal buffer.
     ///
     /// This is only relevant for reader-based implementations.
-    fn current_buffer(&self) -> &[u8];
+    fn buffer(&self) -> &[u8];
 
-    /// Returns the offset of the start of the buffer.
+    /// Returns the offset of the buffer.
     ///
     /// This is only relevant for reader-based implementations.
     fn buffer_offset(&self) -> usize {
         0
     }
 
-    /// Returns `true` if we are at the end of the current buffer.
+    /// Returns `true` if we are reaching the end of the buffer.
     ///
     /// This is only relevant for reader-based implementations.
     fn is_end_of_buffer(&self) -> bool;
@@ -135,7 +140,16 @@ impl<'a> InputData<'a> for SliceInput<'a> {
     }
 
     #[inline(always)]
-    fn current_buffer(&self) -> &[u8] {
+    fn current_chunk_len(&self) -> usize {
+        if self.pos <= self.data.len() {
+            64
+        } else {
+            self.data.len() % 64
+        }
+    }
+
+    #[inline(always)]
+    fn buffer(&self) -> &[u8] {
         self.data
     }
 
@@ -206,8 +220,13 @@ impl<'a> InputData<'a> for MmapInput<'a> {
     }
 
     #[inline(always)]
-    fn current_buffer(&self) -> &[u8] {
-        self.slice.current_buffer()
+    fn current_chunk_len(&self) -> usize {
+        self.slice.current_chunk_len()
+    }
+
+    #[inline(always)]
+    fn buffer(&self) -> &[u8] {
+        self.slice.buffer()
     }
 
     #[inline(always)]
@@ -273,8 +292,13 @@ impl InputData<'static> for RamFileInput {
     }
 
     #[inline(always)]
-    fn current_buffer(&self) -> &[u8] {
-        self.slice.current_buffer()
+    fn current_chunk_len(&self) -> usize {
+        self.slice.current_chunk_len()
+    }
+
+    #[inline(always)]
+    fn buffer(&self) -> &[u8] {
+        self.slice.buffer()
     }
 
     #[inline(always)]
@@ -381,7 +405,16 @@ impl<'a, R: Read + Send + 'a> InputData<'a> for ReaderInput<'a, R> {
     }
 
     #[inline(always)]
-    fn current_buffer(&self) -> &[u8] {
+    fn current_chunk_len(&self) -> usize {
+        if 64 <= self.pos && self.pos <= self.len {
+            64
+        } else {
+            self.len % 64
+        }
+    }
+
+    #[inline(always)]
+    fn buffer(&self) -> &[u8] {
         &self.data
     }
 
@@ -464,8 +497,13 @@ impl InputData<'static> for FileInput {
     }
 
     #[inline(always)]
-    fn current_buffer(&self) -> &[u8] {
-        self.reader.current_buffer()
+    fn current_chunk_len(&self) -> usize {
+        self.reader.current_chunk_len()
+    }
+
+    #[inline(always)]
+    fn buffer(&self) -> &[u8] {
+        self.reader.buffer()
     }
 
     #[inline(always)]
@@ -538,8 +576,13 @@ impl InputData<'static> for StdinInput {
     }
 
     #[inline(always)]
-    fn current_buffer(&self) -> &[u8] {
-        self.reader.current_buffer()
+    fn current_chunk_len(&self) -> usize {
+        self.reader.current_chunk_len()
+    }
+
+    #[inline(always)]
+    fn buffer(&self) -> &[u8] {
+        self.reader.buffer()
     }
 
     #[inline(always)]
